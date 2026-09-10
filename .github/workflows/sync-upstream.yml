@@ -9,14 +9,37 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: sync-upstream-master
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync master from upstream
-        uses: repo-sync/github-sync@v2
+      - name: Check out fork
+        uses: actions/checkout@v4
         with:
-          source_repo: anlostyle/notify-router
-          source_branch: master
-          destination_branch: master
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge upstream master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/anlostyle/notify-router.git
+          else
+            git remote add upstream https://github.com/anlostyle/notify-router.git
+          fi
+          git fetch upstream master
+
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "Fork master already contains upstream/master; nothing to push."
+            exit 0
+          fi
+
+          git merge --no-edit upstream/master
+          git push origin master
