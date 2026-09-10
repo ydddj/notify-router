@@ -103,6 +103,7 @@ const state = {
   deliveryFilters: { route_id: '', channel_name: '', error: '', date_from: '', date_to: '' },
   lastPage: '',
   modalSubmit: null,
+  modalReturnFocus: null,
   logTimer: null,
 }
 
@@ -198,8 +199,11 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme
   localStorage.setItem('notify-theme', theme)
   const icon = theme === 'dark' ? '#i-sun' : '#i-moon'
+  const label = theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'
   $('#theme-icon')?.setAttribute('href', icon)
   $('#login-theme-icon')?.setAttribute('href', icon)
+  $$('.theme-button').forEach(button => { button.setAttribute('aria-label', label); button.title = label })
+  $('#theme-color')?.setAttribute('content', theme === 'dark' ? '#0b0d12' : '#f4f5f8')
 }
 
 const PALETTES = [
@@ -227,13 +231,16 @@ function setPalette(index) {
 
 function togglePaletteMenu(button) {
   const existing = $('#palette-menu')
-  if (existing) return existing.remove()
+  if (existing) { button.setAttribute('aria-expanded', 'false'); return existing.remove() }
   const selected = Number(localStorage.getItem('notify-palette') || 7)
   const menu = document.createElement('div')
   menu.id = 'palette-menu'
   menu.className = 'palette-menu'
-  menu.innerHTML = PALETTES.map((item, index) => `<button class="palette-item ${index === selected ? 'active' : ''}" data-palette="${index}"><i class="palette-dot" style="background:${item[1]}"></i>${item[0]}</button>`).join('')
+  menu.setAttribute('role', 'menu')
+  menu.setAttribute('aria-label', '界面配色')
+  menu.innerHTML = PALETTES.map((item, index) => `<button class="palette-item ${index === selected ? 'active' : ''}" data-palette="${index}" role="menuitemradio" aria-checked="${index === selected}"><i class="palette-dot" style="background:${item[1]}"></i>${item[0]}</button>`).join('')
   document.body.append(menu)
+  button.setAttribute('aria-expanded', 'true')
   const rect = button.getBoundingClientRect()
   menu.style.top = `${Math.min(rect.bottom + 8, window.innerHeight - menu.offsetHeight - 12)}px`
   menu.style.right = `${Math.max(12, window.innerWidth - rect.right)}px`
@@ -312,42 +319,55 @@ async function renderPage() {
   clearInterval(state.logTimer)
   state.logTimer = null
   const [eyebrow, title, description] = PAGES[page]
+  document.title = `${title} · Notify`
   $('#page-eyebrow').textContent = eyebrow
   $('#page-title').textContent = title
   $('#page-description').textContent = description
+  $('#global-search').placeholder = `搜索${title}`
+  $('#global-search').setAttribute('aria-label', `搜索${title}`)
   setPageActions(page)
-  $$('#nav a').forEach(link => link.classList.toggle('active', link.dataset.page === page))
+  $$('#nav a').forEach(link => {
+    const active = link.dataset.page === page
+    link.classList.toggle('active', active)
+    if (active) link.setAttribute('aria-current', 'page')
+    else link.removeAttribute('aria-current')
+  })
   closeMobileMenu()
+  $('#page-content').setAttribute('aria-busy', 'true')
 
-  if (page === 'deliveries') {
-    $('#page-content').innerHTML = '<div class="skeleton"></div>'
-    const filters = { ...state.deliveryFilters, status: state.deliveryStatus }
-    const suffix = Object.entries(filters).filter(([, value]) => value).map(([key, value]) => `&${key}=${encodeURIComponent(value)}`).join('')
-    state.deliveries = await api(`/api/admin/deliveries?limit=300${suffix}`)
+  try {
+    if (page === 'deliveries') {
+      $('#page-content').innerHTML = '<div class="skeleton"></div>'
+      const filters = { ...state.deliveryFilters, status: state.deliveryStatus }
+      const suffix = Object.entries(filters).filter(([, value]) => value).map(([key, value]) => `&${key}=${encodeURIComponent(value)}`).join('')
+      state.deliveries = await api(`/api/admin/deliveries?limit=300${suffix}`)
+    }
+    if (page === 'logs') {
+      state.logs = await api('/api/admin/logs?limit=300')
+      state.logTimer = setInterval(async () => {
+        if (currentPage() !== 'logs') return
+        try { state.logs = await api('/api/admin/logs?limit=300'); renderCurrent() } catch { /* next poll retries */ }
+      }, 5000)
+    }
+    if (page === 'plugins') {
+      state.pluginStoreLoading = true
+      state.pluginStoreError = ''
+      loadPluginStore()
+    }
+    if (page === 'monitors') {
+      $('#page-content').innerHTML = '<div class="skeleton"></div>'
+      state.monitors = await api('/api/admin/monitors')
+      $('#nav-monitors').textContent = state.monitors.summary?.total || 0
+    }
+    if (page === 'tasks') {
+      $('#page-content').innerHTML = '<div class="skeleton"></div>'
+      state.tasks = await api('/api/admin/tasks')
+      $('#nav-tasks').textContent = state.tasks.summary?.total || 0
+    }
+    renderCurrent()
+  } finally {
+    $('#page-content').removeAttribute('aria-busy')
   }
-  if (page === 'logs') {
-    state.logs = await api('/api/admin/logs?limit=300')
-    state.logTimer = setInterval(async () => {
-      if (currentPage() !== 'logs') return
-      try { state.logs = await api('/api/admin/logs?limit=300'); renderCurrent() } catch { /* next poll retries */ }
-    }, 5000)
-  }
-  if (page === 'plugins') {
-    state.pluginStoreLoading = true
-    state.pluginStoreError = ''
-    loadPluginStore()
-  }
-  if (page === 'monitors') {
-    $('#page-content').innerHTML = '<div class="skeleton"></div>'
-    state.monitors = await api('/api/admin/monitors')
-    $('#nav-monitors').textContent = state.monitors.summary?.total || 0
-  }
-  if (page === 'tasks') {
-    $('#page-content').innerHTML = '<div class="skeleton"></div>'
-    state.tasks = await api('/api/admin/tasks')
-    $('#nav-tasks').textContent = state.tasks.summary?.total || 0
-  }
-  renderCurrent()
 }
 
 function renderCurrent() {
@@ -374,14 +394,14 @@ function renderMonitors() {
     const healthy = ['up', 'healthy', 'ok'].includes(item.status)
     return `<article class="entity-card"><div class="entity-head"><span class="entity-icon">${icon('monitor')}</span><div class="entity-title"><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.provider)} · ${escapeHtml(item.category)}</p></div><span class="status-badge ${healthy ? 'active' : 'failed'}">${healthy ? '正常' : '需关注'}</span></div><div class="entity-body"><p>${escapeHtml(item.summary || '暂无状态说明')}</p></div><div class="entity-actions"><small>检查：${escapeHtml(formatDate(item.last_checked_at))}</small><span class="spacer"></span><span class="tag">${escapeHtml(item.status)}</span></div></article>`
   }).join('')}</div>` : emptyState('monitor', '还没有监控数据', 'NDU、Watchtower、哪吒或 PVE 产生状态后会显示在这里')
-  const history = events.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>事件</th><th>来源</th><th>状态</th><th>时间</th></tr></thead><tbody>${events.slice(0,50).map(item => `<tr><td><div class="cell-title"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.summary)}</small></div></td><td>${escapeHtml(item.source)}</td><td><span class="status-badge ${item.status === 'resolved' ? 'active' : 'pending'}">${item.status === 'resolved' ? '已恢复' : '事件'}</span></td><td>${escapeHtml(formatDate(item.created_at))}</td></tr>`).join('')}</tbody></table></div>` : ''
+  const history = events.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>事件</th><th>来源</th><th>状态</th><th>时间</th></tr></thead><tbody>${events.slice(0,50).map(item => `<tr><td data-label="事件"><div class="cell-title"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.summary)}</small></div></td><td data-label="来源">${escapeHtml(item.source)}</td><td data-label="状态"><span class="status-badge ${item.status === 'resolved' ? 'active' : 'pending'}">${item.status === 'resolved' ? '已恢复' : '事件'}</span></td><td data-label="时间">${escapeHtml(formatDate(item.created_at))}</td></tr>`).join('')}</tbody></table></div>` : ''
   return `<div class="stats-grid">${statCard('监控项', summary.total || 0, '统一状态入口', 'monitor', 'purple')}${statCard('运行正常', summary.healthy || 0, '最近检查健康', 'check', 'green')}${statCard('需要关注', summary.attention || 0, '异常或警告', 'alert', 'orange')}</div>${cards}<section class="panel" style="margin-top:18px"><header class="panel-header"><div><h2>状态事件</h2><p>异常与恢复历史</p></div></header><div class="panel-body">${history || '暂无状态变化'}</div></section>`
 }
 
 function renderTasks() {
   const summary = state.tasks.summary || {}
   const items = (state.tasks.items || []).filter(item => matches(item.name, item.plugin_id, item.schedule, item.last_status))
-  const rows = items.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>任务</th><th>来源</th><th>计划</th><th>最近状态</th><th>最近完成</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td><span class="tag purple">${escapeHtml(item.plugin_id)}</span></td><td><code class="code">${escapeHtml(item.schedule)}</code></td><td><span class="status-badge ${item.last_status === 'success' ? 'active' : item.last_status === 'failed' ? 'failed' : 'pending'}">${escapeHtml(item.last_status)}</span></td><td>${escapeHtml(formatDate(item.last_finished_at))}</td></tr>`).join('')}</tbody></table></div>` : emptyState('task', '还没有已注册任务', 'Reminder、NSRSS 等插件注册定时任务后会显示在这里')
+  const rows = items.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>任务</th><th>来源</th><th>计划</th><th>最近状态</th><th>最近完成</th></tr></thead><tbody>${items.map(item => `<tr><td data-label="任务"><strong>${escapeHtml(item.name)}</strong></td><td data-label="来源"><span class="tag purple">${escapeHtml(item.plugin_id)}</span></td><td data-label="计划"><code class="code">${escapeHtml(item.schedule)}</code></td><td data-label="最近状态"><span class="status-badge ${item.last_status === 'success' ? 'active' : item.last_status === 'failed' ? 'failed' : 'pending'}">${escapeHtml(item.last_status)}</span></td><td data-label="最近完成">${escapeHtml(formatDate(item.last_finished_at))}</td></tr>`).join('')}</tbody></table></div>` : emptyState('task', '还没有已注册任务', 'Reminder、NSRSS 等插件注册定时任务后会显示在这里')
   return `<div class="stats-grid">${statCard('全部任务', summary.total || 0, '插件与系统任务', 'task', 'purple')}${statCard('已启用', summary.enabled || 0, '由调度器管理', 'check', 'green')}${statCard('执行失败', summary.failed || 0, `运行中 ${summary.running || 0}`, 'alert', 'orange')}</div>${rows}`
 }
 
@@ -528,6 +548,7 @@ function formField(name, label, type = 'text', value = '', placeholder = '', hin
 
 function openModal({ eyebrow = '通知管理', title, body, submitText = '保存', wide = false, noSubmit = false, onSubmit = null }) {
   const modal = $('#modal')
+  if (!modal.open) state.modalReturnFocus = document.activeElement
   modal.classList.toggle('wide', wide)
   $('#modal-eyebrow').textContent = eyebrow
   $('#modal-title').textContent = title
@@ -538,12 +559,12 @@ function openModal({ eyebrow = '通知管理', title, body, submitText = '保存
   $('#modal-submit').hidden = noSubmit
   state.modalSubmit = onSubmit
   if (!modal.open) modal.showModal()
+  requestAnimationFrame(() => $('#modal-body input:not([type="hidden"]), #modal-body select, #modal-body textarea, #modal-submit')?.focus())
 }
 
 function closeModal() {
   const modal = $('#modal')
   if (modal.open) modal.close()
-  state.modalSubmit = null
 }
 
 function confirmModal(title, message, action, danger = false) {
@@ -1073,17 +1094,28 @@ document.addEventListener('click', async event => {
   if (palette) {
     setPalette(Number(palette.dataset.palette))
     $('#palette-menu')?.remove()
+    $$('[data-action="toggle-palette"]').forEach(button => button.setAttribute('aria-expanded', 'false'))
     return
   }
   const target = event.target.closest('[data-action]')
   if (!target) {
-    if (!event.target.closest('#palette-menu')) $('#palette-menu')?.remove()
+    if (!event.target.closest('#palette-menu')) {
+      $('#palette-menu')?.remove()
+      $$('[data-action="toggle-palette"]').forEach(button => button.setAttribute('aria-expanded', 'false'))
+    }
     return
   }
   try { await handleAction(target.dataset.action, target) } catch (reason) { toast('操作失败', reason.message, 'error') }
 })
 
 $('#mobile-backdrop').addEventListener('click', closeMobileMenu)
+
+$('#modal').addEventListener('close', () => {
+  state.modalSubmit = null
+  const returnFocus = state.modalReturnFocus
+  state.modalReturnFocus = null
+  if (returnFocus?.isConnected) returnFocus.focus()
+})
 
 $('#global-search').addEventListener('input', event => {
   state.query = event.target.value
@@ -1103,12 +1135,18 @@ document.addEventListener('keydown', event => {
     event.preventDefault()
     $('#global-search')?.focus()
   }
-  if (event.key === 'Escape') closeMobileMenu()
+  if (event.key === 'Escape') {
+    closeMobileMenu()
+    $('#palette-menu')?.remove()
+    $$('[data-action="toggle-palette"]').forEach(button => button.setAttribute('aria-expanded', 'false'))
+  }
 })
 
 window.addEventListener('hashchange', () => renderPage().catch(reason => toast('加载失败', reason.message, 'error')))
 
 async function boot() {
+  $('.search kbd').textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ K' : 'Ctrl K'
+  $$('[data-action="toggle-palette"]').forEach(button => button.setAttribute('aria-expanded', 'false'))
   const preferred = localStorage.getItem('notify-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
   setTheme(preferred)
   setPalette(Number(localStorage.getItem('notify-palette') || 7))
