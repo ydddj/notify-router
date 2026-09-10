@@ -25,6 +25,14 @@ def test_login_page_does_not_prefill_admin_username():
     assert script.index("<h2>界面质感</h2>") < script.index("<h2>运行信息</h2>")
 
 
+def test_template_cards_and_editor_render_event_examples():
+    script = files("notifyhub").joinpath("static/app.js").read_text(encoding="utf-8")
+    assert "renderTemplateExample(template.title, template.type)" in script
+    assert "names.split(',')" in script
+    assert "file_info: '文件：电影 | 2 GB | MKV'" in script
+    assert "updatePreview()" in script
+
+
 def test_admin_login_returns_plaintext_config_and_can_queue_channel_test(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKDIR", str(tmp_path))
     monkeypatch.setenv("NH_USER", "admin")
@@ -54,6 +62,62 @@ def test_admin_login_returns_plaintext_config_and_can_queue_channel_test(tmp_pat
         response = client.post("/api/admin/channels/test/test", json={})
         assert response.status_code == 200
         assert test_store.delivery_status()[0]["status"] == "pending"
+    finally:
+        client.close()
+
+
+def test_plugin_notification_test_queues_selected_route_and_plugin_logs_are_available(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKDIR", str(tmp_path))
+    monkeypatch.setenv("NH_USER", "admin")
+    monkeypatch.setenv("NH_PASSWORD", "test-password")
+    main = importlib.import_module("notifyhub.main")
+    test_store = Store(tmp_path)
+    test_store.save_config({
+        "app": {},
+        "channels": [{"name": "test", "type": "webhook", "config": {"url": "http://127.0.0.1:9"}}],
+        "routes": [{"route_id": "r1", "route_name": "Route", "channel_name": ["test"], "active": True}],
+    })
+    monkeypatch.setattr(main, "store", test_store)
+    monkeypatch.setattr(main, "builtin_plugin_manifests", [])
+    monkeypatch.setattr(main.plugin_supervisor, "manifests", [{"id": "demo", "name": "Demo", "capabilities": ["notify.action", "notify.test"]}])
+    main.plugin_supervisor.plugin_logs["demo"] = [{"time": "now", "level": "INFO", "logger": "plugin.demo", "message": "ready"}]
+    client = TestClient(main.app)
+    try:
+        assert client.post("/api/admin/login", json={"username": "admin", "password": "test-password"}).status_code == 200
+        response = client.post("/api/admin/plugins/demo/test", json={"route_id": "r1", "title": "T", "content": "C"})
+        assert response.status_code == 200
+        assert response.json()["route_id"] == "r1"
+        assert test_store.delivery_status()[0]["status"] == "pending"
+        assert client.get("/api/admin/plugins/demo/logs").json()[0]["message"] == "ready"
+    finally:
+        client.close()
+
+
+def test_config_import_validates_before_mutating_and_exports_plugin_configs(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKDIR", str(tmp_path))
+    monkeypatch.setenv("NH_USER", "admin")
+    monkeypatch.setenv("NH_PASSWORD", "test-password")
+    main = importlib.import_module("notifyhub.main")
+    test_store = Store(tmp_path)
+    test_store.save_plugin_config("demo", "Demo", {"token": "value"})
+    original_config = test_store.config
+    monkeypatch.setattr(main, "store", test_store)
+    client = TestClient(main.app)
+    try:
+        assert client.post("/api/admin/login", json={"username": "admin", "password": "test-password"}).status_code == 200
+        exported = client.get("/api/admin/export")
+        assert exported.status_code == 200
+        assert exported.json()["plugins"] == [{"plugin_id": "demo", "plugin_name": "Demo", "config": {"token": "value"}, "status": 1}]
+
+        response = client.put(
+            "/api/admin/import",
+            json={
+                "config": {"app": {"app_name": "should-not-apply"}, "channels": [], "routes": []},
+                "templates": {"template": [{"name": "broken", "type": "Custom.Alert", "title": "{% invalid", "content": ""}]},
+            },
+        )
+        assert response.status_code == 400
+        assert test_store.config == original_config
     finally:
         client.close()
 

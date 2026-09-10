@@ -110,6 +110,7 @@ const state = {
   modalSubmit: null,
   modalReturnFocus: null,
   logTimer: null,
+  pluginLogTimer: null,
 }
 
 function icon(name) {
@@ -500,11 +501,38 @@ function renderRoutes() {
     <tr><td data-label="通道"><div class="cell-title"><strong>${escapeHtml(route.route_name)}</strong><small>${escapeHtml(route.route_id)}</small></div></td><td data-label="发送渠道">${(route.channel_name || []).map(name => `<span class="tag purple">${escapeHtml(name)}</span>`).join(' ') || '—'}</td><td data-label="绑定模板"><span class="truncate">${escapeHtml((route.bind_template || []).join('、') || '直接透传消息')}</span></td><td data-label="状态"><span class="status-badge ${route.active === false ? 'inactive' : 'active'}">${route.active === false ? '已停用' : '运行中'}</span></td><td data-label="操作"><div class="inline-actions"><button class="icon-button" data-action="copy-route" data-id="${escapeHtml(route.route_id)}" aria-label="复制接口">${icon('copy')}</button><button class="icon-button" data-action="edit-route" data-id="${escapeHtml(route.route_id)}" aria-label="编辑">${icon('edit')}</button><button class="icon-button danger" data-action="delete-route" data-id="${escapeHtml(route.route_id)}" aria-label="删除">${icon('trash')}</button></div></td></tr>`).join('')}</tbody></table></div>`
 }
 
+const TEMPLATE_PREVIEW_EXAMPLES = {
+  'Emby.PlaybackStart': {
+    event_label: '开始播放', media_info: '媒体：4K HEVC', file_info: '文件：电影 | 12.8 GB | MKV', progress_bar: '●●●●●●●●●●●●●○○○○○○○○○○○○○○', progress_text: '进度：50.00% | 余60分钟 | 共120分钟 | 直接播放', device_play_info: '设备：Emby | 客厅电视 | 家庭影院',
+  },
+  'Emby.PlaybackEnd': {
+    event_label: '停止播放', media_info: '媒体：4K HEVC', file_info: '文件：电影 | 12.8 GB | MKV', progress_bar: '●●●●●●●●●●●●●●●●●●●●●○○○○○○', progress_text: '进度：78.00% | 余26分钟 | 共120分钟', device_play_info: '设备：Emby | 客厅电视 | 家庭影院',
+  },
+  'Emby.LibraryNewMovie': {
+    event_label: '入库', date_text: '入库：2026-09-02 星期三 18:00:00', premiere_text: '首映：2025-08-20', media_info: '媒体：4K HEVC', server_info: '设备：家庭影院 | 4.8.0', film_info: '影片：2025 | 8.6 | 剧情·科幻', overview_text: '简介：这是一段示例影片简介。',
+  },
+  'Emby.LibraryNewSeries': {
+    event_label: '入库', item_type_name: '剧集', item_name: '示例剧集', episode_count: '12', date_text: '入库：2026-09-02 星期三 18:00:00', premiere_text: '首映：2025-08-20', server_info: '设备：家庭影院 | 4.8.0', film_info: '影片：2025 | 9.0 | 剧情·科幻', overview_text: '简介：这是一段示例剧集简介。',
+  },
+}
+
+const TEMPLATE_PREVIEW_DEFAULTS = {
+  notification_title: '用户开始播放：示例电影', content: '媒体库：电影 · 设备：手机', event_code: 'playback.start', event_label: '开始播放', event: '开始播放', username: '用户', user: '用户', title: '示例电影', item_name: '示例电影', item_type_name: '电影', item_type: 'Movie', year: '2025', year_label: '(2025)', genres: '剧情、科幻', genres_text: '剧情·科幻', overview: '这是一段示例简介。', server_name: '家庭影院', server_version: '4.8.0', server_info: '设备：家庭影院 | 4.8.0', device: '手机客户端', device_name: '手机客户端', client: 'Emby', size: '2 GB', container: 'H264', bitrate: '8', progress_bar: '●●●●●●●●●●●●●○○○○○○○○○○○○○○', progress_text: '进度：50%', position: '00:30:00', runtime: '01:00:00', play_method: '直接播放', media_info: '媒体：H264', file_info: '文件：电影 | 2 GB | MKV', date_text: '时间：2026-09-02 星期三 18:00:00', premiere_text: '首映：2025-08-20', device_play_info: '设备：Emby | 客厅电视 | 家庭影院', address_info: '地址：192.0.2.1 | 本地网络', film_info: '影片：2025 | 8.6 | 剧情·科幻', people_text: '演员：示例演员', overview_text: '简介：这是一段示例简介。', machine_name: 'PVE节点', task_type: '备份', task_status: '成功', datastore_name: 'local', total_time: '3秒', total_size: '1 GB', job_id: 'daily', removed_garbage: '200 MB', update_title: 'Watchtower 更新', update_content: '发现 1 个镜像更新', updated_image_count: '1', updated_image_list: 'example/app:latest',
+}
+
+function renderTemplateExample(value, type) {
+  const examples = { ...TEMPLATE_PREVIEW_DEFAULTS, ...(TEMPLATE_PREVIEW_EXAMPLES[type] || {}) }
+  return String(value || '')
+    .replace(/{{\s*\[([^\]]+)]\s*\|\s*select\s*\|\s*join\(['"]\\n['"]\)\s*}}/g, (_, names) => names.split(',').map(name => examples[name.trim()] || '').filter(Boolean).join('\n'))
+    .replace(/{{\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*}}/g, (_, name) => examples[name] ?? `{{ ${name} }}`)
+    .replace(/{%[^%]*%}/g, '')
+}
+
 function renderTemplates() {
   const templates = state.templates.filter(item => matches(item.name, item.type, item.description, item.title, item.content))
   if (!templates.length) return emptyState('file', state.query ? '没有匹配的通知模板' : '还没有通知模板', state.query ? '请尝试其他关键词' : '创建模板统一管理消息格式')
   return `<div class="entity-grid">${templates.map(template => `
-    <article class="entity-card"><div class="entity-head"><span class="entity-icon">${icon('file')}</span><div class="entity-title"><h3>${escapeHtml(template.name)}</h3><p>${escapeHtml(template.type || '通用模板')}</p></div></div><div class="entity-body"><strong class="truncate">${escapeHtml(template.title || '无标题')}</strong><p class="truncate">${escapeHtml(template.description || template.content || '暂无说明')}</p></div><div class="entity-actions"><span class="tag purple">Jinja</span><span class="spacer"></span><div class="inline-actions"><button class="icon-button" data-action="edit-template" data-name="${escapeHtml(template.name)}" aria-label="编辑">${icon('edit')}</button><button class="icon-button danger" data-action="delete-template" data-name="${escapeHtml(template.name)}" aria-label="删除">${icon('trash')}</button></div></div></article>`).join('')}</div>`
+    <article class="entity-card"><div class="entity-head"><span class="entity-icon">${icon('file')}</span><div class="entity-title"><h3>${escapeHtml(template.name)}</h3><p>${escapeHtml(template.type || '通用模板')}</p></div></div><div class="entity-body"><strong class="truncate">${escapeHtml(renderTemplateExample(template.title, template.type) || '无标题')}</strong><p class="truncate">${escapeHtml(renderTemplateExample(template.content, template.type) || template.description || '暂无说明')}</p></div><div class="entity-actions"><span class="tag purple">Jinja</span><span class="spacer"></span><div class="inline-actions"><button class="icon-button" data-action="edit-template" data-name="${escapeHtml(template.name)}" aria-label="编辑">${icon('edit')}</button><button class="icon-button danger" data-action="delete-template" data-name="${escapeHtml(template.name)}" aria-label="删除">${icon('trash')}</button></div></div></article>`).join('')}</div>`
 }
 
 function renderPlugins() {
@@ -514,8 +542,10 @@ function renderPlugins() {
   const sourceSummary = sources.length
     ? sources.map(source => `<span class="tag ${source.status === 'error' ? 'danger' : ''}" title="${escapeHtml(source.error || source.url)}">${escapeHtml(source.name)} · ${source.status === 'ok' ? '正常' : '异常'}</span>`).join(' ')
     : state.pluginStoreLoading ? '<span class="form-note">正在加载插件源…</span>' : '<span class="form-note">还没有插件源，点击右上角“插件源”添加地址。</span>'
-  const installedCards = plugins.length ? `<div class="entity-grid">${plugins.map(plugin => `
-    <article class="entity-card"><div class="entity-head"><span class="entity-icon">${icon('plug')}</span><div class="entity-title"><h3>${escapeHtml(plugin.name || plugin.id)}</h3><p>${escapeHtml(plugin.id)} · v${escapeHtml(plugin.version || '—')}</p></div><span class="status-badge active">已加载</span></div><div class="entity-body"><p>${escapeHtml(plugin.description || '暂无插件说明')}</p><div>${(plugin.capabilities || []).map(value => `<span class="tag purple">${escapeHtml(value)}</span>`).join(' ')}</div></div><div class="entity-actions">${plugin.has_frontend ? `<button class="button secondary small" data-action="open-plugin" data-id="${escapeHtml(plugin.id)}">打开页面</button>` : ''}<span class="spacer"></span><button class="button secondary small" data-action="edit-plugin" data-id="${escapeHtml(plugin.id)}">${icon('settings')}配置</button></div></article>`).join('')}</div>`
+  const installedCards = plugins.length ? `<div class="entity-grid">${plugins.map(plugin => {
+    const canTest = (plugin.capabilities || []).includes('notify.test')
+    return `<article class="entity-card"><div class="entity-head"><span class="entity-icon">${icon('plug')}</span><div class="entity-title"><h3>${escapeHtml(plugin.name || plugin.id)}</h3><p>${escapeHtml(plugin.id)} · v${escapeHtml(plugin.version || '—')}</p></div><span class="status-badge active">已加载</span></div><div class="entity-body"><p>${escapeHtml(plugin.description || '暂无插件说明')}</p><div>${(plugin.capabilities || []).map(value => `<span class="tag purple">${escapeHtml(value)}</span>`).join(' ')}</div></div><div class="entity-actions">${plugin.has_frontend ? `<button class="button secondary small" data-action="open-plugin" data-id="${escapeHtml(plugin.id)}">打开页面</button>` : ''}<button class="button secondary small" data-action="plugin-docs" data-id="${escapeHtml(plugin.id)}">使用说明</button><button class="button secondary small" data-action="plugin-logs" data-id="${escapeHtml(plugin.id)}">日志</button>${canTest ? `<button class="button secondary small" data-action="test-plugin" data-id="${escapeHtml(plugin.id)}">${icon('send')}测试通知</button>` : ''}<span class="spacer"></span><button class="button secondary small" data-action="edit-plugin" data-id="${escapeHtml(plugin.id)}">${icon('settings')}配置</button></div></article>`
+  }).join('')}</div>`
     : '<div class="empty-state"><p>当前没有已加载的可选插件</p></div>'
   const storeCards = catalog.length ? `<div class="entity-grid">${catalog.map(plugin => {
     const action = plugin.update_available ? 'update-plugin' : plugin.installed ? '' : 'install-plugin'
@@ -617,6 +647,11 @@ function openModal({ eyebrow = '通知管理', title, body, submitText = '保存
 function closeModal() {
   const modal = $('#modal')
   if (modal.open) modal.close()
+  if (state.pluginLogTimer) {
+    clearInterval(state.pluginLogTimer)
+    state.pluginLogTimer = null
+  }
+  state.modalSubmit = null
 }
 
 function confirmModal(title, message, action, danger = false) {
@@ -778,7 +813,6 @@ function openTemplateForm(template = null) {
     'Emby.SystemStartup': [...embyBaseVariables],
     'Emby.SystemUpdateAvailable': [...embyBaseVariables, 'new_version', 'current_version_text', 'new_version_text'],
   }
-  const examples = { notification_title: '用户开始播放：示例电影', content: '媒体库：电影 · 设备：手机', event_code: 'playback.start', event_label: '开始播放', event: '开始播放', username: '用户', user: '用户', title: '示例电影', item_name: '示例电影', item_type_name: '电影', item_type: 'Movie', year: '2025', year_label: '(2025)', genres: '剧情、科幻', genres_text: '剧情·科幻', overview: '这是一段示例简介。', server_name: '家庭影院', server_version: '4.8.0', device: '手机客户端', device_name: '手机客户端', client: 'Emby', size: '2 GB', container: 'H264', bitrate: '8', progress_text: '进度：50%', position: '00:30:00', runtime: '01:00:00', play_method: '直接播放', media_info: '媒体：H264', machine_name: 'PVE节点', task_type: '备份', task_status: '成功', datastore_name: 'local', total_time: '3秒', total_size: '1 GB', job_id: 'daily', removed_garbage: '200 MB', update_title: 'Watchtower 更新', update_content: '发现 1 个镜像更新', updated_image_count: '1', updated_image_list: 'example/app:latest' }
   const variablesForType = type => {
     if (variableGroups[type]) return variableGroups[type]
     if (String(type).startsWith('PVE.')) return ['machine_name', 'task_type', 'task_status', 'datastore_name', 'total_time', 'total_size', 'job_id', 'details', 'index_file_count', 'removed_garbage', 'original_data_usage', 'on_disk_usage', 'deduplication_factor']
@@ -787,7 +821,7 @@ function openTemplateForm(template = null) {
   }
   openModal({
     eyebrow: template ? '编辑通知模板' : '新增通知模板', title: template ? original.name : '创建通知模板', wide: true,
-    body: `<div class="dialog-grid"><div><div class="field-row">${formField('name', '模板名称', 'text', original.name, '例如：短信通知')}<label class="field"><span>事件类型</span><select name="type_choice">${typeOptions}<option value="__custom__" ${knownType ? '' : 'selected'}>自定义事件类型</option></select><input name="type_custom" type="text" value="${escapeHtml(knownType ? '' : original.type)}" placeholder="例如：MyService.Alert" autocomplete="off" ${knownType ? 'hidden' : ''}><small>内置事件按模块分组显示；也可以选择“自定义事件类型”手动输入。</small></label></div>${formField('description', '模板说明', 'text', original.description || '', '说明这个模板的使用场景')}${formField('title', '通知标题', 'textarea', original.title || '')}${formField('content', '通知内容', 'textarea', original.content || '')}<p class="form-note">保持现有 Jinja 模板变量不变，例如 <code>{{ device_name }}</code>。变量由实际推送来源填充。</p></div><aside class="preview-pane"><p class="eyebrow">News 实时预览</p><div class="news-preview"><div class="news-image">${icon('bell')}</div><div class="news-copy"><h3 id="preview-title">${escapeHtml(original.title || '通知标题')}</h3><p id="preview-content">${escapeHtml(original.content || '通知内容')}</p></div></div><p class="preview-note">这是企业微信 News 卡片的内容结构预览；图片和链接来自通道或推送请求。</p></aside></div>`,
+    body: `<div class="dialog-grid"><div><div class="field-row">${formField('name', '模板名称', 'text', original.name, '例如：短信通知')}<label class="field"><span>事件类型</span><select name="type_choice">${typeOptions}<option value="__custom__" ${knownType ? '' : 'selected'}>自定义事件类型</option></select><input name="type_custom" type="text" value="${escapeHtml(knownType ? '' : original.type)}" placeholder="例如：MyService.Alert" autocomplete="off" ${knownType ? 'hidden' : ''}><small>内置事件按模块分组显示；也可以选择“自定义事件类型”手动输入。</small></label></div>${formField('description', '模板说明', 'text', original.description || '', '说明这个模板的使用场景')}${formField('title', '通知标题', 'textarea', original.title || '')}${formField('content', '通知内容', 'textarea', original.content || '')}<p class="form-note">保持现有 Jinja 模板变量不变，例如 <code>{{ device_name }}</code>。变量由实际推送来源填充。</p></div><aside class="preview-pane"><p class="eyebrow">News 实时预览</p><div class="news-preview"><div class="news-image">${icon('bell')}</div><div class="news-copy"><h3 id="preview-title">${escapeHtml(renderTemplateExample(original.title, selectedType) || '通知标题')}</h3><p id="preview-content">${escapeHtml(renderTemplateExample(original.content, selectedType) || '通知内容')}</p></div></div><p class="preview-note">这是企业微信 News 卡片的内容结构预览；图片和链接来自通道或推送请求。</p></aside></div>`,
     onSubmit: async form => {
       const data = new FormData(form)
       const name = String(data.get('name') || '').trim()
@@ -843,15 +877,17 @@ function openTemplateForm(template = null) {
     customType.hidden = !custom
     if (!custom && typeChoice.value) customType.value = typeChoice.value
     refreshVariableHelper(custom ? customType.value : typeChoice.value)
+    updatePreview()
   })
-  customType.addEventListener('input', () => refreshVariableHelper(customType.value))
-  const renderExample = value => String(value || '').replace(/{{\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*}}/g, (_, name) => examples[name] ?? `{{ ${name} }}`).replace(/{%[^%]*%}/g, '')
+  customType.addEventListener('input', () => { refreshVariableHelper(customType.value); updatePreview() })
   const updatePreview = () => {
-    $('#preview-title').textContent = renderExample($('#modal-body [name="title"]').value) || '通知标题'
-    $('#preview-content').textContent = renderExample($('#modal-body [name="content"]').value) || '通知内容'
+    const type = typeChoice.value === '__custom__' ? customType.value : typeChoice.value
+    $('#preview-title').textContent = renderTemplateExample($('#modal-body [name="title"]').value, type) || '通知标题'
+    $('#preview-content').textContent = renderTemplateExample($('#modal-body [name="content"]').value, type) || '通知内容'
   }
   $('#modal-body [name="title"]').addEventListener('input', updatePreview)
   $('#modal-body [name="content"]').addEventListener('input', updatePreview)
+  updatePreview()
 }
 
 function isSecretField(name) {
@@ -892,6 +928,65 @@ function pluginHelp(plugin) {
   }).join('')}</div>`
 }
 
+function pluginDocs(plugin) {
+  const docs = plugin.documentation && typeof plugin.documentation === 'object' ? plugin.documentation : {}
+  const sections = []
+  if (typeof plugin.documentation === 'string' && plugin.documentation.trim()) sections.push(`<div class="form-note">${escapeHtml(plugin.documentation)}</div>`)
+  if (docs.summary) sections.push(`<div class="form-note">${escapeHtml(docs.summary)}</div>`)
+  const listSection = (title, values) => {
+    if (!Array.isArray(values) || !values.length) return
+    sections.push(`<div class="form-section"><h3 class="form-section-title">${escapeHtml(title)}</h3><ol class="plugin-doc-list">${values.map(value => `<li>${escapeHtml(value)}</li>`).join('')}</ol></div>`)
+  }
+  listSection('配置步骤', docs.setup)
+  listSection('使用方式', docs.usage)
+  if (Array.isArray(docs.callbacks) && docs.callbacks.length) sections.push(`<div class="form-section"><h3 class="form-section-title">回调地址</h3>${docs.callbacks.map(item => `<div class="form-note"><strong>${escapeHtml(item.name || '回调地址')}</strong>${item.method ? `<span class="tag purple" style="margin-left:8px">${escapeHtml(item.method)}</span>` : ''}<code class="code plugin-doc-code">${escapeHtml(String(item.url || '').replaceAll('{site_url}', String(state.config?.app?.site_url || location.origin).replace(/\/+$/, '')))}</code></div>`).join('')}</div>`)
+  if (Array.isArray(docs.examples) && docs.examples.length) sections.push(`<div class="form-section"><h3 class="form-section-title">示例</h3>${docs.examples.map(item => `<div class="form-note"><strong>${escapeHtml(item.title || '示例')}</strong><code class="code plugin-doc-code">${escapeHtml(item.code || '')}</code></div>`).join('')}</div>`)
+  listSection('注意事项', docs.notes)
+  if (!sections.length) return pluginHelp(plugin) || '<p class="form-note">这个插件暂时没有补充使用说明。</p>'
+  return sections.join('')
+}
+
+function openPluginDocs(plugin) {
+  openModal({ eyebrow: '插件说明', title: plugin.name || plugin.id, body: pluginDocs(plugin), wide: true, noSubmit: true })
+}
+
+async function openPluginLogs(plugin) {
+  if (state.pluginLogTimer) clearInterval(state.pluginLogTimer)
+  const render = logs => {
+    const status = plugin.running ? '<span class="status-badge active">运行中</span>' : '<span class="status-badge failed">已停止</span>'
+    const body = logs.length ? `<div class="plugin-log-meta"><span>${status}</span><span class="form-note">最近 ${logs.length} 条</span></div><div class="log-view">${logs.slice().reverse().map(item => `<div class="log-line"><span class="log-time">${escapeHtml(item.time)}</span><span class="log-level ${escapeHtml(item.level)}">${escapeHtml(item.level)}</span><span class="log-name">${escapeHtml(item.logger)}</span><span>${escapeHtml(item.message)}</span></div>`).join('')}</div>` : `<div class="plugin-log-meta"><span>${status}</span></div><p class="form-note">暂无插件日志。Worker 启动、任务执行和异常会显示在这里。</p>`
+    $('#modal-body').innerHTML = body
+  }
+  openModal({ eyebrow: '插件日志', title: plugin.name || plugin.id, body: '<p class="form-note">正在加载日志…</p>', wide: true, noSubmit: true })
+  const refresh = async () => {
+    try { render(await api(`/api/admin/plugins/${encodeURIComponent(plugin.id)}/logs?limit=300`)) } catch (error) { render([{ time: '', level: 'ERROR', logger: 'notify', message: error.message }]) }
+  }
+  await refresh()
+  state.pluginLogTimer = setInterval(refresh, 4000)
+}
+
+async function openPluginTest(plugin) {
+  const routes = state.config.routes || []
+  const routeOptions = routes.map(item => [item.route_id, item.route_name || item.route_id])
+  let config = {}
+  try { config = await api(`/api/admin/plugins/${encodeURIComponent(plugin.id)}/config`) || {} } catch { /* route can still be selected manually */ }
+  const selected = config.route_id || config.notify_route || config.notify_route_id || (routes.length === 1 ? routes[0].route_id : '')
+  openModal({
+    eyebrow: '插件通知测试', title: `测试 · ${plugin.name || plugin.id}`,
+    body: `${formField('route_id', '通知通道', 'select', selected, '', '模拟插件事件并通过真实通知通道发送。', routeOptions)}${formField('title', '通知标题', 'text', `[测试] ${plugin.name || plugin.id}`)}${formField('content', '通知内容', 'textarea', '这是一条来自插件的测试通知，用于验证插件配置的通知通道。')}`,
+    submitText: '发送测试通知',
+    onSubmit: async form => {
+      const data = new FormData(form)
+      const routeId = String(data.get('route_id') || '').trim()
+      if (!routeId) throw new Error('请选择通知通道')
+      const result = await api(`/api/admin/plugins/${encodeURIComponent(plugin.id)}/test`, { method: 'POST', body: JSON.stringify({ route_id: routeId, title: data.get('title'), content: data.get('content') }) })
+      closeModal()
+      toast('测试通知已加入队列', `通道：${result.route_id}`)
+      setTimeout(async () => { await loadCore(); if (currentPage() === 'deliveries') renderCurrent() }, 800)
+    },
+  })
+}
+
 function openPluginSources() {
   const sources = (state.config.app?.plugin_sources || []).join('\n')
   openModal({
@@ -912,7 +1007,7 @@ function openPluginSources() {
 async function openPluginForm(plugin) {
   const config = await api(`/api/admin/plugins/${encodeURIComponent(plugin.id)}/config`)
   const fields = plugin.configField || []
-  const body = `${pluginHelp(plugin)}${fields.length ? fields.map(field => pluginField(field, config[field.fieldName])).join('') : '<p class="form-note">这个插件没有通用配置项，请使用插件自己的页面完成操作。</p>'}`
+  const body = `${fields.length ? fields.map(field => pluginField(field, config[field.fieldName])).join('') : '<p class="form-note">这个插件没有通用配置项，请使用插件自己的页面完成操作。</p>'}`
   openModal({
     eyebrow: '插件设置', title: plugin.name || plugin.id, body,
     noSubmit: !fields.length,
@@ -1200,6 +1295,9 @@ async function handleAction(action, target) {
     }, true)
   }
   if (action === 'edit-plugin') return openPluginForm(state.plugins.find(item => item.id === target.dataset.id))
+  if (action === 'plugin-docs') return openPluginDocs(state.plugins.find(item => item.id === target.dataset.id))
+  if (action === 'plugin-logs') return openPluginLogs(state.plugins.find(item => item.id === target.dataset.id))
+  if (action === 'test-plugin') return openPluginTest(state.plugins.find(item => item.id === target.dataset.id))
   if (action === 'open-plugin') return window.open(`/api/plugins/${encodeURIComponent(target.dataset.id)}/frontend/`, '_blank', 'noopener')
   if (action === 'change-password') return openPasswordForm()
   if (action === 'retry-delivery') {

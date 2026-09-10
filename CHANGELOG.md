@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.15 - 2026-09-05
+
+- 将 NS/DF 论坛 RSS 的发布时间从 GMT 转换为北京时间。
+- 让 Emby 内置模板、前端实时预览和实际通知使用同一份可编辑模板。
+
+## 0.6.14 - 2026-09-01
+
+- 初始化插件 Worker 日志处理器，确保插件业务 INFO 日志进入插件日志面板。
+- 保持插件通知测试能力在持久化插件目录升级后可用。
+
+## 0.6.13 - 2026-09-01
+
+- 独立展示插件使用说明与企业微信回调地址，保持配置页简洁。
+- 增加插件 Worker 日志查看与中文生命周期状态。
+- 增加 NDU、NSRSS、Reminder 的插件级通知测试。
+
+## 0.6.12 - 2026-09-01
+
+- Add CleanLLM-style theme palettes, per-event template variable helpers, delivery filters, connection probes, and configuration export/import.
+- Include plugin settings in configuration exports and validate imports before applying them.
+
 ## 0.6.11 - 2026-08-31
 
 - Seed built-in notification templates only for fresh data volumes, preserving later user edits and deletions across restarts.
