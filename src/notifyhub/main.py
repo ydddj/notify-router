@@ -1,4 +1,6 @@
 import asyncio
+import binascii
+import fnmatch
 import hashlib
 import hmac
 import json
@@ -8,7 +10,7 @@ import secrets
 import signal
 import threading
 import time
-from base64 import urlsafe_b64decode, urlsafe_b64encode
+from base64 import b64decode, urlsafe_b64decode, urlsafe_b64encode
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,7 +20,7 @@ import uvicorn
 import httpx
 from .channels import send
 from fastapi import Body, Cookie, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
@@ -64,6 +66,7 @@ os.environ.setdefault("WORKDIR", str(DATA_DIR))
 store = Store(DATA_DIR)
 Server.configure(store)
 worker = DeliveryWorker(store)
+store.on_enqueue = worker.wake
 plugin_store = PluginStore(store)
 plugin_supervisor = PluginSupervisor(store)
 security = HTTPBasic(auto_error=False)
@@ -389,7 +392,10 @@ def enqueue_event(route_id, event, template_type, context, message, push_img_url
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "version": __version__}
+    state = worker.health()
+    if not state["healthy"]:
+        return JSONResponse({"status": "degraded", "version": __version__, "worker": state}, status_code=503)
+    return {"status": "ok", "version": __version__, "worker": state}
 
 
 @app.get("/api/appearance", include_in_schema=False)
@@ -433,22 +439,6 @@ def admin_login(payload: LoginRequest, response: Response, request: Request):
 def admin_logout(response: Response):
     response.delete_cookie(SESSION_COOKIE)
     return {"authenticated": False}
-
-
-@app.get("/api/admin/note", dependencies=[Depends(admin_auth)])
-def admin_note():
-    return {"note": store.admin_note}
-
-
-@app.put("/api/admin/note", dependencies=[Depends(admin_auth)])
-def save_admin_note(payload: dict = Body(...)):
-    note = payload.get("note") if isinstance(payload, dict) else None
-    if not isinstance(note, str):
-        raise HTTPException(400, "备注内容必须是文本")
-    if len(note) > 10_000:
-        raise HTTPException(400, "备注不能超过 10000 个字符")
-    store.save_admin_note(note)
-    return {"message": "备注已保存", "note": note}
 
 
 @app.get("/api/admin/appearance", dependencies=[Depends(admin_auth)])
@@ -955,8 +945,39 @@ app.include_router(build_monitor_router(store, admin_auth))
 app.include_router(build_task_router(store, admin_auth))
 
 
+# WeCom callbacks verify their own signatures; everything else needs a console login
+# unless the plugin manifest lists the path in "public_paths".
+DEFAULT_PUBLIC_PLUGIN_PATHS = ("chat",)
+
+
+def _plugin_path_public(plugin_id, path):
+    manifest = plugin_supervisor.manifest_for(plugin_id) or {}
+    patterns = manifest.get("public_paths")
+    if not isinstance(patterns, list):
+        patterns = DEFAULT_PUBLIC_PLUGIN_PATHS
+    path = path.strip("/")
+    return any(fnmatch.fnmatchcase(path, str(pattern).strip("/")) for pattern in patterns)
+
+
+def _request_is_admin(request: Request):
+    if _valid_session(request.cookies.get("notify_session")):
+        return True
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "basic" or not value:
+        return False
+    try:
+        username, _, password = b64decode(value.strip(), validate=True).decode().partition(":")
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return False
+    return _valid_admin(username, password)
+
+
 @app.api_route("/api/plugins/{plugin_id}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 async def plugin_proxy(plugin_id: str, path: str, request: Request):
+    if not _plugin_path_public(plugin_id, path) and not _request_is_admin(request):
+        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+            return RedirectResponse("/#plugins", status_code=303)
+        raise HTTPException(401, "authentication required")
     return await plugin_supervisor.proxy(plugin_id, path, request)
 
 
@@ -964,9 +985,17 @@ STATIC_DIR = Path(__file__).with_name("static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _index_html():
+    # Version the asset URLs so browsers fetch the new UI right after an upgrade.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for asset in ("/static/app.css", "/static/app.js"):
+        html = html.replace(f'"{asset}"', f'"{asset}?v={quote(__version__)}"')
+    return html
+
+
 @app.get("/")
 def index():
-    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
+    return Response(_index_html(), media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
 
 def _all_plugin_manifests():

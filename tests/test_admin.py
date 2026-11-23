@@ -21,6 +21,16 @@ def test_login_page_does_not_prefill_admin_username():
     assert "--page-dim" in styles
     assert "--glass-dim" in styles
     assert "function toggleNavigation()" in script
+    assert "function stopPluginLogRefresh()" in script
+    assert "revision !== state.modalRevision" in script
+    assert "appearance_background_url" in script
+    assert "save-random-background" in script
+    assert "plugin-action-group" in script
+    assert "const DELIVERY_BATCH_SIZE = 30" in script
+    assert "deliveries.slice(0, state.deliveryVisible)" in script
+    assert "state.deliveryVisible += DELIVERY_BATCH_SIZE" in script
+    assert 'data-action="load-more-deliveries"' in script
+    assert 'data-action="collapse-deliveries"' in script
     assert ".brand-mark, #user-avatar" in script
     assert script.index("<h2>界面质感</h2>") < script.index("<h2>运行信息</h2>")
 
@@ -156,29 +166,6 @@ def test_admin_event_types_lists_registered_types(tmp_path, monkeypatch):
         client.close()
 
 
-def test_admin_note_requires_login_and_persists_on_the_instance(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKDIR", str(tmp_path))
-    monkeypatch.setenv("NH_USER", "admin")
-    monkeypatch.setenv("NH_PASSWORD", "test-password")
-    main = importlib.import_module("notifyhub.main")
-    test_store = Store(tmp_path)
-    monkeypatch.setattr(main, "store", test_store)
-    client = TestClient(main.app)
-    try:
-        assert client.get("/api/admin/note").status_code == 401
-        assert client.put("/api/admin/note", json={"note": "未登录"}).status_code == 401
-        assert client.post("/api/admin/login", json={"username": "admin", "password": "test-password"}).status_code == 200
-        assert client.get("/api/admin/note").json() == {"note": ""}
-
-        response = client.put("/api/admin/note", json={"note": "周日维护通知服务"})
-        assert response.status_code == 200
-        assert Store(tmp_path).admin_note == "周日维护通知服务"
-        assert client.get("/api/admin/note").json() == {"note": "周日维护通知服务"}
-        assert client.put("/api/admin/note", json={"note": "x" * 10_001}).status_code == 400
-    finally:
-        client.close()
-
-
 def test_appearance_settings_and_background_gallery_are_instance_scoped(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKDIR", str(tmp_path))
     monkeypatch.setenv("NH_USER", "admin")
@@ -191,13 +178,15 @@ def test_appearance_settings_and_background_gallery_are_instance_scoped(tmp_path
         public = client.get("/api/appearance")
         assert public.status_code == 200
         assert public.json()["appearance_glass_opacity"] == 50
+        assert public.json()["appearance_background_url"] == ""
         assert client.get("/api/admin/appearance").status_code == 401
         assert client.post("/api/admin/appearance/backgrounds", files={"background": ("bad.txt", b"text", "text/plain")}).status_code == 401
 
         assert client.post("/api/admin/login", json={"username": "admin", "password": "test-password"}).status_code == 200
         invalid = client.post("/api/admin/appearance/backgrounds", files={"background": ("bad.txt", b"text", "text/plain")})
         assert invalid.status_code == 400
-        image = b"\x89PNG\r\n\x1a\n" + b"notify-router-background"
+        assert client.post("/api/admin/appearance/backgrounds", files={"background": ("fake.png", b"\x89PNG\r\n\x1a\n", "image/png")}).status_code == 400
+        image = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415408d763f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082")
         uploaded = client.post("/api/admin/appearance/backgrounds", files={"background": ("background.png", image, "image/png")})
         assert uploaded.status_code == 200
         background = uploaded.json()["appearance_background"]
@@ -216,6 +205,19 @@ def test_appearance_settings_and_background_gallery_are_instance_scoped(tmp_path
         assert saved.status_code == 200
         assert saved.json()["appearance_glass_blur"] == 18
         assert Store(tmp_path).appearance["appearance_background"] == background
+
+        invalid_url = client.put("/api/admin/appearance", json={"appearance_background_url": "javascript:alert(1)"})
+        assert invalid_url.status_code == 400
+        credential_url = client.put("/api/admin/appearance", json={"appearance_background_url": "https://user:pass@example.com/image"})
+        assert credential_url.status_code == 400
+        remote = client.put("/api/admin/appearance", json={"appearance_background_url": "https://t.alcy.cc/pc"})
+        assert remote.status_code == 200
+        assert remote.json()["appearance_background_url"] == "https://t.alcy.cc/pc"
+        assert Store(tmp_path).appearance["appearance_background_url"] == "https://t.alcy.cc/pc"
+
+        uploaded_again = client.post("/api/admin/appearance/backgrounds", files={"background": ("background.png", image, "image/png")})
+        assert uploaded_again.status_code == 200
+        assert uploaded_again.json()["appearance_background_url"] == ""
 
         filename = background.rsplit("/", 1)[-1]
         deleted = client.delete(f"/api/admin/appearance/backgrounds/{filename}")

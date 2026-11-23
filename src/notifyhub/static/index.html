@@ -6,7 +6,7 @@
   <meta id="theme-color" name="theme-color" content="#0b0d12">
   <title>Notify · 通知管理中心</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%237c3aed'/%3E%3Cpath d='M18 46V18h8l12 17V18h8v28h-8L26 29v17z' fill='white'/%3E%3C/svg%3E" type="image/svg+xml">
-  <script>(()=>{const root=document.documentElement,theme=localStorage.getItem('notify-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'),colors=[['#4f46e5','#3730a3'],['#2563eb','#1d4ed8'],['#0891b2','#0e7490'],['#059669','#047857'],['#d97706','#b45309'],['#ea580c','#c2410c'],['#e11d48','#be123c'],['#7c3aed','#6d28d9'],['#c026d3','#a21caf'],['#64748b','#475569']],index=Number(localStorage.getItem('notify-palette')??7),color=colors[index]||colors[7];root.dataset.theme=theme;if(localStorage.getItem('notify-sidebar')==='collapsed')root.classList.add('sidebar-collapsed');root.style.setProperty('--primary',color[0]);root.style.setProperty('--primary-strong',color[1]);root.style.setProperty('--primary-soft',color[0]+'26');root.style.setProperty('--primary-grad',`linear-gradient(180deg,${color[0]},${color[1]})`);try{const a=JSON.parse(localStorage.getItem('notify-appearance')||'{}'),n=(key,fallback)=>Math.max(0,Math.min(100,Number(a[key]??fallback))),opacity=n('appearance_glass_opacity',50),brightness=n('appearance_glass_brightness',45),blur=n('appearance_glass_blur',10),mask=n('appearance_mask_opacity',50),background=/^\/api\/appearance\/background\/[0-9a-f]{64}\.(?:png|jpg|webp|gif|avif)$/.test(a.appearance_background||'')?a.appearance_background:'';root.style.setProperty('--glass-opacity',`${100-opacity}%`);root.style.setProperty('--glass-brightness',(0.65+brightness/100*.7).toFixed(2));root.style.setProperty('--glass-dim',(Math.max(0,(50-brightness)/50*.28)).toFixed(3));root.style.setProperty('--glass-light',(Math.max(0,(brightness-50)/50*.2)).toFixed(3));root.style.setProperty('--glass-blur',`${blur}px`);root.style.setProperty('--page-dim',(Math.max(0,(50-mask)/50*.72)).toFixed(3));root.style.setProperty('--page-light',(Math.max(0,(mask-50)/50*.28)).toFixed(3));root.style.setProperty('--instance-background',background?`url("${background}")`:'none');root.dataset.hasBackground=background?'true':'false'}catch{}document.querySelector('meta[name="theme-color"]')?.setAttribute('content',theme==='dark'?'#0b0d12':'#f4f5f8')})()</script>
+  <script>(()=>{const root=document.documentElement,theme=localStorage.getItem('notify-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'),colors=[['#4f46e5','#3730a3'],['#2563eb','#1d4ed8'],['#0891b2','#0e7490'],['#059669','#047857'],['#d97706','#b45309'],['#ea580c','#c2410c'],['#e11d48','#be123c'],['#7c3aed','#6d28d9'],['#c026d3','#a21caf'],['#64748b','#475569']],index=Number(localStorage.getItem('notify-palette')??7),color=colors[index]||colors[7];root.dataset.theme=theme;if(localStorage.getItem('notify-sidebar')==='collapsed')root.classList.add('sidebar-collapsed');root.style.setProperty('--primary',color[0]);root.style.setProperty('--primary-strong',color[1]);root.style.setProperty('--primary-soft',color[0]+'26');root.style.setProperty('--primary-grad',`linear-gradient(180deg,${color[0]},${color[1]})`);try{const a=JSON.parse(localStorage.getItem('notify-appearance')||'{}'),n=(key,fallback)=>Math.max(0,Math.min(100,Number(a[key]??fallback))),opacity=n('appearance_glass_opacity',50),brightness=n('appearance_glass_brightness',45),blur=n('appearance_glass_blur',10),mask=n('appearance_mask_opacity',50),uploaded=/^\/api\/appearance\/background\/[0-9a-f]{64}\.(?:png|jpg|webp|gif|avif)$/.test(a.appearance_background||'')?a.appearance_background:'',remote=(()=>{try{const url=new URL(String(a.appearance_background_url||''));if(!['http:','https:'].includes(url.protocol)||url.username||url.password)return '';url.searchParams.set('_notify_refresh',String(Math.floor(performance.timeOrigin)));return url.href}catch{return ''}})(),background=remote||uploaded;root.style.setProperty('--glass-opacity',`${100-opacity}%`);root.style.setProperty('--glass-brightness',(0.65+brightness/100*.7).toFixed(2));root.style.setProperty('--glass-dim',(Math.max(0,(50-brightness)/50*.28)).toFixed(3));root.style.setProperty('--glass-light',(Math.max(0,(brightness-50)/50*.2)).toFixed(3));root.style.setProperty('--glass-blur',`${blur}px`);root.style.setProperty('--page-dim',(Math.max(0,(50-mask)/50*.72)).toFixed(3));root.style.setProperty('--page-light',(Math.max(0,(mask-50)/50*.28)).toFixed(3));root.style.setProperty('--instance-background',background?`url("${background}")`:'none');root.dataset.hasBackground=background?'true':'false'}catch{}document.querySelector('meta[name="theme-color"]')?.setAttribute('content',theme==='dark'?'#0b0d12':'#f4f5f8')})()</script>
   <style>body.auth-pending #login-view,body.auth-pending #app{visibility:hidden}body.auth-pending{overflow:hidden}</style>
   <link rel="stylesheet" href="/static/app.css">
   <script defer src="/static/app.js"></script>
@@ -41,10 +41,10 @@
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 21h20zM12 9v5M12 18h.01"/></symbol>
-    <symbol id="i-note" viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H4v16h6M14 8l4 4-4 4M8 12h10"/></symbol>
     <symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1"/><circle cx="15" cy="8" r="1"/><circle cx="16" cy="14" r="1"/><path d="M8 16h2a2 2 0 0 1 2 2v2"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V3m0 0 4 4m-4-4L8 7M4 21h16"/></symbol>
   </svg>
 
@@ -81,7 +81,7 @@
         <a href="#dashboard" data-page="dashboard"><svg><use href="#i-grid"/></svg><span>看板</span></a>
         <p class="nav-label">通知管理</p>
         <a href="#channels" data-page="channels"><svg><use href="#i-bell"/></svg><span>通知渠道</span><b id="nav-channels">0</b></a>
-        <a href="#routes" data-page="routes"><svg><use href="#i-route"/></svg><span>通知通道</span><b id="nav-routes">0</b></a>
+        <a href="#routes" data-page="routes"><svg><use href="#i-route"/></svg><span>通知路由</span><b id="nav-routes">0</b></a>
         <a href="#templates" data-page="templates"><svg><use href="#i-file"/></svg><span>通知模板</span></a>
         <p class="nav-label">服务中心</p>
         <a href="#monitors" data-page="monitors"><svg><use href="#i-monitor"/></svg><span>监控中心</span><b id="nav-monitors">0</b></a>
@@ -93,7 +93,7 @@
         <a href="#logs" data-page="logs"><svg><use href="#i-terminal"/></svg><span>系统日志</span></a>
         <a href="#settings" data-page="settings"><svg><use href="#i-settings"/></svg><span>系统设置</span></a>
       </nav>
-      <div class="sidebar-status"><span class="status-dot"></span><div><strong>服务运行正常</strong><small id="sidebar-version">Notify</small></div></div>
+      <div class="sidebar-status" id="sidebar-status"><span class="status-dot"></span><div><strong id="sidebar-status-text">服务运行正常</strong><small id="sidebar-version">Notify</small></div></div>
     </aside>
 
     <main class="main">
@@ -101,12 +101,12 @@
         <button id="menu-button" class="icon-button menu-button" data-action="open-menu" aria-label="收起侧栏" aria-expanded="true"><svg><use id="menu-icon" href="#i-sidebar-collapse"/></svg></button>
         <div class="search"><svg><use href="#i-search"/></svg><input id="global-search" type="search" placeholder="搜索当前页面" aria-label="搜索当前页面"><kbd>⌘ K</kbd></div>
         <div class="topbar-actions">
-          <span class="service-pill"><i></i><span>服务正常</span></span>
+          <span class="service-pill" id="service-pill"><i></i><span id="service-pill-text">服务正常</span></span>
           <button class="icon-button" data-action="toggle-palette" aria-label="切换配色" title="切换配色"><svg><use href="#i-palette"/></svg></button>
           <button class="icon-button theme-button" data-action="toggle-theme" aria-label="切换主题" title="切换主题"><svg><use id="theme-icon" href="#i-moon"/></svg></button>
           <button class="icon-button" data-action="restart-service" aria-label="重启服务" title="重启服务"><svg><use href="#i-refresh"/></svg></button>
           <button class="user-button" data-action="user-menu" aria-haspopup="menu" aria-expanded="false"><span id="user-avatar">A</span><span class="user-meta"><strong id="username">admin</strong><small>管理员</small></span><svg><use href="#i-chevron"/></svg></button>
-          <div id="user-menu" class="user-menu" role="menu" hidden><button class="user-menu-item" data-action="admin-note" type="button" role="menuitem"><svg><use href="#i-note"/></svg><span>备注</span></button><button class="user-menu-item" data-action="logout" type="button" role="menuitem"><svg><use href="#i-logout"/></svg><span>退出登录</span></button></div>
+          <div id="user-menu" class="user-menu" role="menu" hidden><button class="user-menu-item" data-action="logout" type="button" role="menuitem"><svg><use href="#i-logout"/></svg><span>退出登录</span></button></div>
         </div>
       </header>
 
