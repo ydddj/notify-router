@@ -4,6 +4,15 @@
   "homepage": "https://github.com/anlostyle/notify-router/tree/master/plugins",
   "plugins": [
     {
+      "id": "baiyun_traffic",
+      "name": "白菜云流量监控",
+      "version": "0.1.0",
+      "description": "采集白菜云订阅用量，在监控中心展示状态并发送每日流量报告。",
+      "author": "Codex",
+      "archive_url": "https://github.com/anlostyle/notify-router/archive/6c0af05fce2d561df28ff97e73347fcfa87f544a.zip",
+      "subdir": "notify-router-6c0af05fce2d561df28ff97e73347fcfa87f544a/plugins/baiyun_traffic"
+    },
+    {
       "id": "TGForwardBot",
       "name": "TG私聊机器人",
       "version": "0.0.1",
@@ -60,11 +69,11 @@
     {
       "id": "wx-flowlink-save",
       "name": "115转存-FlowLink",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "description": "支持企业微信和快捷指令接收 115 分享，并交给 FlowLink 自动转存整理。",
       "author": "Codex",
-      "archive_url": "https://github.com/anlostyle/notify-router/archive/d29a7a9b7e6edd34ce6d05ea5565df98d5870bcb.zip",
-      "subdir": "notify-router-d29a7a9b7e6edd34ce6d05ea5565df98d5870bcb/plugins/wx_flowlink_save"
+      "archive_url": "https://github.com/anlostyle/notify-router/archive/70c7093b500d3a5b9bfbc59f16a574da9b197c2a.zip",
+      "subdir": "notify-router-70c7093b500d3a5b9bfbc59f16a574da9b197c2a/plugins/wx_flowlink_save"
     },
     {
       "id": "wx-nullbr",
@@ -74,6 +83,15 @@
       "author": "htnanako",
       "archive_url": "https://github.com/anlostyle/notify-router/archive/refs/heads/master.zip",
       "subdir": "notify-router-master/plugins/wx-nullbr"
+    },
+    {
+      "id": "wx-nextemby-card",
+      "name": "NextEmby 卡密助手",
+      "version": "0.3.1",
+      "description": "通过企业微信让 NextEmby 生成邀请卡密，并回复可直接转发的注册信息。",
+      "author": "Claude",
+      "archive_url": "https://github.com/anlostyle/notify-router/archive/d0ddbda01cb3c62e30933884b6e96041dc19db8e.zip",
+      "subdir": "notify-router-d0ddbda01cb3c62e30933884b6e96041dc19db8e/plugins/wx_nextemby_card"
     }
   ]
 }

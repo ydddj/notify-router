@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import json
 import re
 import shutil
@@ -10,12 +11,24 @@ import uuid
 from datetime import date, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from jinja2 import meta
 from jinja2.sandbox import SandboxedEnvironment
 
 
 _jinja = SandboxedEnvironment(autoescape=False)
+_appearance_background_re = re.compile(r"^/api/appearance/background/([0-9a-f]{64}\.(?:png|jpg|webp|gif|avif))$")
+_appearance_defaults = {
+    "appearance_background": "",
+    "appearance_background_url": "",
+    "appearance_backgrounds": [],
+    "appearance_glass_opacity": 50,
+    "appearance_glass_brightness": 45,
+    "appearance_glass_blur": 10,
+    "appearance_mask_opacity": 50,
+}
 
 
 def default_templates():
@@ -74,10 +87,14 @@ class Store:
         self.conf_dir = self.data_dir / "conf"
         self.db_dir = self.data_dir / "db"
         self.plugins_dir = self.data_dir / "plugins"
+        self.backgrounds_dir = self.data_dir / "backgrounds"
         self.config_path = self.conf_dir / "config.json"
         self.templates_path = self.conf_dir / "notify_template.json"
+        self.appearance_path = self.conf_dir / "appearance.json"
         self.db_path = self.db_dir / "main.db"
         self._config_lock = threading.Lock()
+        self.on_enqueue = None
+        self._appearance_lock = threading.RLock()
         self._prepare_files()
         self._prepare_db()
 
@@ -85,6 +102,7 @@ class Store:
         self.conf_dir.mkdir(parents=True, exist_ok=True)
         self.db_dir.mkdir(parents=True, exist_ok=True)
         self.plugins_dir.mkdir(parents=True, exist_ok=True)
+        self.backgrounds_dir.mkdir(parents=True, exist_ok=True)
         if not self.config_path.exists():
             self.config_path.write_text(
                 json.dumps(
@@ -304,6 +322,13 @@ class Store:
                     archive.add(database_copy, arcname="db/main.db")
                     archive.add(self.config_path, arcname="conf/config.json")
                     archive.add(self.templates_path, arcname="conf/notify_template.json")
+                    if self.appearance_path.exists():
+                        archive.add(self.appearance_path, arcname="conf/appearance.json")
+                    for background in self.appearance.get("appearance_backgrounds", []):
+                        match = _appearance_background_re.fullmatch(background)
+                        path = self.backgrounds_dir / match.group(1) if match else None
+                        if path and path.is_file():
+                            archive.add(path, arcname=f"backgrounds/{path.name}")
                 archive_copy.replace(target)
                 target.chmod(0o600)
             finally:
@@ -338,6 +363,15 @@ class Store:
             return _normalise_config(json.loads(self.config_path.read_text(encoding="utf-8")))
 
     def save_config(self, config):
+        self.validate_config(config)
+        with self._config_lock:
+            temp = self.config_path.with_suffix(".json.tmp")
+            temp.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            shutil.copy2(self.config_path, self.config_path.with_suffix(".json.bak"))
+            temp.replace(self.config_path)
+
+    @staticmethod
+    def validate_config(config):
         if not isinstance(config, dict) or not isinstance(config.get("app"), dict) or not isinstance(config.get("channels"), list) or not isinstance(config.get("routes"), list):
             raise ValueError("config must contain app, channels and routes")
         _normalise_config(config)
@@ -347,14 +381,11 @@ class Store:
             raise ValueError("channel names must be present and unique")
         if len(route_ids) != len(config["routes"]) or None in route_ids or len(route_ids) != len(set(route_ids)):
             raise ValueError("route ids must be present and unique")
-        missing = {name for route in config["routes"] for name in (route.get("channel_name") or []) if name not in set(channel_names)}
+        channel_names = set(channel_names)
+        missing = {name for route in config["routes"] for name in (route.get("channel_name") or []) if name not in channel_names}
         if missing:
             raise ValueError(f"routes reference missing channels: {sorted(missing)}")
-        with self._config_lock:
-            temp = self.config_path.with_suffix(".json.tmp")
-            temp.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            shutil.copy2(self.config_path, self.config_path.with_suffix(".json.bak"))
-            temp.replace(self.config_path)
+        return True
 
     @property
     def channels(self):
@@ -368,17 +399,188 @@ class Store:
     def templates(self):
         return json.loads(self.templates_path.read_text(encoding="utf-8")).get("template", [])
 
+    @staticmethod
+    def _appearance_number(value, default):
+        try:
+            return max(0, min(100, int(value)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _appearance_remote_url(value):
+        value = str(value or "").strip()
+        if not value:
+            return ""
+        try:
+            parsed = urlsplit(value)
+            return value if parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password else ""
+        except ValueError:
+            return ""
+
+    @property
+    def appearance(self):
+        with self._appearance_lock:
+            try:
+                saved = json.loads(self.appearance_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                saved = {}
+            if not isinstance(saved, dict):
+                saved = {}
+            values = dict(_appearance_defaults)
+            backgrounds = []
+            saved_backgrounds = saved.get("appearance_backgrounds", [])
+            if not isinstance(saved_backgrounds, list):
+                saved_backgrounds = []
+            for value in saved_backgrounds:
+                match = _appearance_background_re.fullmatch(str(value or ""))
+                if match and (self.backgrounds_dir / match.group(1)).is_file() and value not in backgrounds:
+                    backgrounds.append(value)
+            values["appearance_backgrounds"] = backgrounds[-20:]
+            selected = str(saved.get("appearance_background") or "")
+            values["appearance_background"] = selected if selected in values["appearance_backgrounds"] else ""
+            values["appearance_background_url"] = self._appearance_remote_url(saved.get("appearance_background_url"))
+            for key in (
+                "appearance_glass_opacity",
+                "appearance_glass_brightness",
+                "appearance_glass_blur",
+                "appearance_mask_opacity",
+            ):
+                values[key] = self._appearance_number(saved.get(key), _appearance_defaults[key])
+            return values
+
+    def _write_appearance(self, values):
+        temporary = self.appearance_path.with_name(f".{self.appearance_path.name}.tmp")
+        try:
+            temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.chmod(0o600)
+            temporary.replace(self.appearance_path)
+            self.appearance_path.chmod(0o600)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def save_appearance(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("appearance must be an object")
+        with self._appearance_lock:
+            values = self.appearance
+            selected = str(payload.get("appearance_background", values["appearance_background"]) or "")
+            if selected and selected not in values["appearance_backgrounds"]:
+                raise ValueError("selected background is not in the instance gallery")
+            values["appearance_background"] = selected
+            if "appearance_background_url" in payload:
+                remote_url = str(payload.get("appearance_background_url") or "").strip()
+                values["appearance_background_url"] = self._appearance_remote_url(remote_url)
+                if remote_url and not values["appearance_background_url"]:
+                    raise ValueError("随机图接口必须是无账号密码的 HTTP 或 HTTPS 地址")
+            for key in (
+                "appearance_glass_opacity",
+                "appearance_glass_brightness",
+                "appearance_glass_blur",
+                "appearance_mask_opacity",
+            ):
+                if key in payload:
+                    values[key] = self._appearance_number(payload[key], _appearance_defaults[key])
+            self._write_appearance(values)
+            return values
+
+    @staticmethod
+    def _image_extension(content):
+        if len(content) >= 24 and content.startswith(b"\x89PNG\r\n\x1a\n") and content[8:16] == b"\x00\x00\x00\rIHDR" and int.from_bytes(content[16:20], "big") and int.from_bytes(content[20:24], "big"):
+            return "png"
+        if len(content) >= 4 and content.startswith(b"\xff\xd8\xff") and content.endswith(b"\xff\xd9"):
+            return "jpg"
+        if len(content) >= 10 and content.startswith((b"GIF87a", b"GIF89a")) and int.from_bytes(content[6:8], "little") and int.from_bytes(content[8:10], "little"):
+            return "gif"
+        if len(content) >= 20 and content[:4] == b"RIFF" and content[8:12] == b"WEBP" and content[12:16] in {b"VP8 ", b"VP8L", b"VP8X"} and int.from_bytes(content[4:8], "little") + 8 == len(content):
+            return "webp"
+        if len(content) >= 16 and content[4:8] == b"ftyp" and 16 <= int.from_bytes(content[:4], "big") <= len(content) and any(content[index:index + 4] in {b"avif", b"avis"} for index in range(8, int.from_bytes(content[:4], "big"), 4)):
+            return "avif"
+        raise ValueError("background must be a PNG, JPEG, WebP, GIF or AVIF image")
+
+    def save_appearance_background(self, content):
+        if not content or len(content) > 5 * 1024 * 1024:
+            raise ValueError("background image must be no larger than 5 MB")
+        extension = self._image_extension(content)
+        filename = f"{hashlib.sha256(content).hexdigest()}.{extension}"
+        url = f"/api/appearance/background/{filename}"
+        with self._appearance_lock:
+            target = self.backgrounds_dir / filename
+            if not target.exists():
+                temporary = target.with_name(f".{filename}.tmp")
+                try:
+                    temporary.write_bytes(content)
+                    temporary.replace(target)
+                    target.chmod(0o600)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            values = self.appearance
+            backgrounds = [item for item in values["appearance_backgrounds"] if item != url]
+            backgrounds.append(url)
+            removed = backgrounds[:-20]
+            values["appearance_backgrounds"] = backgrounds[-20:]
+            values["appearance_background"] = url
+            values["appearance_background_url"] = ""
+            self._write_appearance(values)
+            for item in removed:
+                match = _appearance_background_re.fullmatch(item)
+                if match:
+                    (self.backgrounds_dir / match.group(1)).unlink(missing_ok=True)
+            return values
+
+    def delete_appearance_background(self, filename):
+        if not re.fullmatch(r"[0-9a-f]{64}\.(?:png|jpg|webp|gif|avif)", str(filename or "")):
+            raise ValueError("invalid background filename")
+        url = f"/api/appearance/background/{filename}"
+        with self._appearance_lock:
+            values = self.appearance
+            if url not in values["appearance_backgrounds"]:
+                raise FileNotFoundError(filename)
+            values["appearance_backgrounds"] = [item for item in values["appearance_backgrounds"] if item != url]
+            if values["appearance_background"] == url:
+                values["appearance_background"] = ""
+            self._write_appearance(values)
+            (self.backgrounds_dir / filename).unlink(missing_ok=True)
+            return values
+
+    def appearance_background_path(self, filename):
+        if not re.fullmatch(r"[0-9a-f]{64}\.(?:png|jpg|webp|gif|avif)", str(filename or "")):
+            return None
+        path = self.backgrounds_dir / filename
+        return path if path.is_file() else None
+
     def save_templates(self, payload):
-        if not isinstance(payload, dict) or not isinstance(payload.get("template"), list):
-            raise ValueError("templates must contain a template list")
-        names = [x.get("name") for x in payload["template"] if isinstance(x, dict)]
-        if len(names) != len(payload["template"]) or None in names or len(names) != len(set(names)):
-            raise ValueError("template names must be present and unique")
+        self.validate_templates(payload)
         with self._config_lock:
             temp = self.templates_path.with_suffix(".json.tmp")
             temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             shutil.copy2(self.templates_path, self.templates_path.with_suffix(".json.bak"))
             temp.replace(self.templates_path)
+
+    @classmethod
+    def validate_templates(cls, payload):
+        if not isinstance(payload, dict) or not isinstance(payload.get("template"), list):
+            raise ValueError("templates must contain a template list")
+        names = [x.get("name") for x in payload["template"] if isinstance(x, dict)]
+        if len(names) != len(payload["template"]) or None in names or len(names) != len(set(names)):
+            raise ValueError("template names must be present and unique")
+        for template in payload["template"]:
+            cls.validate_template(template)
+        return True
+
+    @staticmethod
+    def validate_template(template):
+        if not isinstance(template, dict):
+            raise ValueError("each template must be an object")
+        for field in ("title", "content"):
+            source = str(template.get(field) or "")
+            try:
+                parsed = _jinja.parse(source)
+            except Exception as exc:
+                raise ValueError(f"template {template.get('name') or 'unnamed'} {field} has invalid Jinja syntax: {exc}") from exc
+            # The parser deliberately reports undeclared names only; runtime
+            # values may come from plugins, so unknown names are not rejected.
+            meta.find_undeclared_variables(parsed)
+        return True
 
     def render_event(self, route, template_type, context):
         bound = set(_name_list(route.get("bind_template")))
@@ -448,6 +650,8 @@ class Store:
                    VALUES (?, ?, 'pending', 0, ?, ?, ?)""",
                 [(outbox_id, name, time.time(), now, now) for name in channel_names],
             )
+        if self.on_enqueue:
+            self.on_enqueue()
         return outbox_id
 
     def claim_delivery(self):
@@ -593,16 +797,23 @@ class Store:
             "total": success + failed,
             "success": success,
             "failed": failed,
-            "success_rate": round(success * 100 / (success + failed), 1) if success + failed else 100.0,
+            "success_rate": round(success * 100 / (success + failed), 1) if success + failed else None,
             "today": {"success": int(today[0]), "failed": int(today[1])},
             "queue": queue,
             "trend": trend,
             "channel_states": latest_channels,
         }
 
-    def delivery_status(self, limit=100, status=None):
-        where = "WHERE d.status=?" if status else ""
-        params = (status, limit) if status else (limit,)
+    def delivery_status(self, limit=100, status=None, route_id=None, channel_name=None, error=None, date_from=None, date_to=None):
+        clauses, params = [], []
+        if status: clauses.append("d.status=?"); params.append(status)
+        if route_id: clauses.append("o.route_id=?"); params.append(route_id)
+        if channel_name: clauses.append("d.channel_name=?"); params.append(channel_name)
+        if error: clauses.append("COALESCE(d.last_error, '') LIKE ?"); params.append(f"%{error}%")
+        if date_from: clauses.append("substr(o.created_at, 1, 10)>=?"); params.append(date_from)
+        if date_to: clauses.append("substr(o.created_at, 1, 10)<=?"); params.append(date_to)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
         with self.connect() as db:
             return [
                 {**dict(x), "last_error": redact_secret_text(x["last_error"])}
@@ -618,10 +829,13 @@ class Store:
     def retry_failed(self, delivery_id):
         with self.connect() as db:
             result = db.execute(
-                "UPDATE deliveries SET status='retry', next_attempt_at=?, updated_at=? WHERE id=? AND status='failed'",
+                # A manual retry starts a fresh retry cycle instead of a single last attempt.
+                "UPDATE deliveries SET status='retry', attempts=0, next_attempt_at=?, updated_at=? WHERE id=? AND status='failed'",
                 (time.time(), localnow(), delivery_id),
             )
-            return result.rowcount == 1
+        if result.rowcount == 1 and self.on_enqueue:
+            self.on_enqueue()
+        return result.rowcount == 1
 
     def record_event(self, domain, source, event_type, entity_key, severity, title, summary, status="open"):
         now = localnow()
@@ -750,3 +964,67 @@ class Store:
                      updated_at=excluded.updated_at""",
                 (plugin_id, plugin_name, payload, int(bool(status)), now, now),
             )
+
+    def list_plugin_configs(self):
+        with self.connect() as db:
+            rows = [dict(row) for row in db.execute("SELECT plugin_id, plugin_name, config, status FROM plugins ORDER BY plugin_id")]
+        result = []
+        for row in rows:
+            try:
+                config = json.loads(row["config"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                try:
+                    config = ast.literal_eval(row["config"] or "{}")
+                except (ValueError, SyntaxError):
+                    config = {}
+            result.append(
+                {
+                    "plugin_id": row["plugin_id"],
+                    "plugin_name": row["plugin_name"],
+                    "config": config if isinstance(config, dict) else {},
+                    "status": int(row["status"]),
+                }
+            )
+        return result
+
+    @staticmethod
+    def validate_plugin_configs(configs):
+        if configs is None:
+            return True
+        if not isinstance(configs, list):
+            raise ValueError("plugins must be a list")
+        plugin_ids = [item.get("plugin_id") for item in configs if isinstance(item, dict)]
+        plugin_names = [item.get("plugin_name") for item in configs if isinstance(item, dict)]
+        if len(plugin_ids) != len(configs) or any(not value for value in plugin_ids) or len(plugin_ids) != len(set(plugin_ids)):
+            raise ValueError("plugin ids must be present and unique")
+        if any(not value for value in plugin_names) or len(plugin_names) != len(set(plugin_names)):
+            raise ValueError("plugin names must be present and unique")
+        if any(not isinstance(item.get("config"), dict) for item in configs):
+            raise ValueError("plugin config must be an object")
+        return True
+
+    def save_plugin_configs(self, configs):
+        self.validate_plugin_configs(configs)
+        if configs is None:
+            return
+        now = localnow()
+        with self.connect() as db:
+            for item in configs:
+                db.execute(
+                    """INSERT INTO plugins
+                       (plugin_id, plugin_name, config, status, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(plugin_id) DO UPDATE SET
+                         plugin_name=excluded.plugin_name,
+                         config=excluded.config,
+                         status=excluded.status,
+                         updated_at=excluded.updated_at""",
+                    (
+                        item["plugin_id"],
+                        item["plugin_name"],
+                        repr(item["config"]),
+                        int(bool(item.get("status", 1))),
+                        now,
+                        now,
+                    ),
+                )

@@ -1,4 +1,6 @@
 import asyncio
+import binascii
+import fnmatch
 import hashlib
 import hmac
 import json
@@ -8,7 +10,7 @@ import secrets
 import signal
 import threading
 import time
-from base64 import urlsafe_b64decode, urlsafe_b64encode
+from base64 import b64decode, urlsafe_b64decode, urlsafe_b64encode
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,8 +18,9 @@ from urllib.parse import quote
 
 import uvicorn
 import httpx
-from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from .channels import send
+from fastapi import Body, Cookie, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
@@ -63,6 +66,7 @@ os.environ.setdefault("WORKDIR", str(DATA_DIR))
 store = Store(DATA_DIR)
 Server.configure(store)
 worker = DeliveryWorker(store)
+store.on_enqueue = worker.wake
 plugin_store = PluginStore(store)
 plugin_supervisor = PluginSupervisor(store)
 security = HTTPBasic(auto_error=False)
@@ -124,6 +128,7 @@ class TestNotification(BaseModel):
     content: str = "通知渠道连接正常。"
     push_img_url: str | None = None
     push_link_url: str | None = None
+    probe: bool = False
 
 
 class PluginSourcesRequest(BaseModel):
@@ -133,6 +138,14 @@ class PluginSourcesRequest(BaseModel):
 class PluginInstallRequest(BaseModel):
     source_url: str
     plugin_id: str
+
+
+class PluginTestRequest(BaseModel):
+    route_id: str | None = None
+    title: str = "插件测试通知"
+    content: str = "这是一条来自插件的测试通知，用于验证插件配置的通知通道。"
+    push_img_url: str | None = None
+    push_link_url: str | None = None
 
 
 def api_auth(authorization: str | None = Header(default=None)):
@@ -379,7 +392,23 @@ def enqueue_event(route_id, event, template_type, context, message, push_img_url
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "version": __version__}
+    state = worker.health()
+    if not state["healthy"]:
+        return JSONResponse({"status": "degraded", "version": __version__, "worker": state}, status_code=503)
+    return {"status": "ok", "version": __version__, "worker": state}
+
+
+@app.get("/api/appearance", include_in_schema=False)
+def public_appearance():
+    return store.appearance
+
+
+@app.get("/api/appearance/background/{filename}", include_in_schema=False)
+def appearance_background(filename: str):
+    path = store.appearance_background_path(filename)
+    if not path:
+        raise HTTPException(404, "背景图不存在")
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @app.post("/api/admin/login")
@@ -410,6 +439,44 @@ def admin_login(payload: LoginRequest, response: Response, request: Request):
 def admin_logout(response: Response):
     response.delete_cookie(SESSION_COOKIE)
     return {"authenticated": False}
+
+
+@app.get("/api/admin/appearance", dependencies=[Depends(admin_auth)])
+def admin_appearance():
+    return store.appearance
+
+
+@app.put("/api/admin/appearance", dependencies=[Depends(admin_auth)])
+def save_admin_appearance(payload: dict = Body(...)):
+    try:
+        return store.save_appearance(payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/admin/appearance/backgrounds", dependencies=[Depends(admin_auth)])
+async def upload_admin_background(background: UploadFile = File(...)):
+    content = await background.read(5 * 1024 * 1024 + 1)
+    try:
+        return store.save_appearance_background(content)
+    except ValueError as exc:
+        messages = {
+            "background image must be no larger than 5 MB": "背景图不能超过 5 MB",
+            "background must be a PNG, JPEG, WebP, GIF or AVIF image": "背景图必须是 PNG、JPEG、WebP、GIF 或 AVIF 格式",
+        }
+        raise HTTPException(400, messages.get(str(exc), str(exc))) from exc
+    finally:
+        await background.close()
+
+
+@app.delete("/api/admin/appearance/backgrounds/{filename}", dependencies=[Depends(admin_auth)])
+def delete_admin_background(filename: str):
+    try:
+        return store.delete_appearance_background(filename)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "背景图不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(400, "背景图名称无效") from exc
 
 
 @app.get("/api/admin/session")
@@ -650,10 +717,10 @@ def records(limit: int = 100):
 
 
 @app.get("/api/admin/deliveries", dependencies=[Depends(admin_auth)])
-def deliveries(limit: int = 100, status: str | None = None):
+def deliveries(limit: int = 100, status: str | None = None, route_id: str | None = None, channel_name: str | None = None, error: str | None = None, date_from: str | None = None, date_to: str | None = None):
     if status not in {None, "pending", "processing", "retry", "sent", "failed"}:
         raise HTTPException(400, "invalid delivery status")
-    return store.delivery_status(max(1, min(limit, 500)), status)
+    return store.delivery_status(max(1, min(limit, 500)), status, route_id, channel_name, error, date_from, date_to)
 
 
 @app.post("/api/admin/deliveries/{delivery_id}/retry", dependencies=[Depends(admin_auth)])
@@ -665,6 +732,16 @@ def retry_delivery(delivery_id: int):
 
 @app.post("/api/admin/channels/{channel_name}/test", dependencies=[Depends(admin_auth)])
 def test_channel(channel_name: str, payload: TestNotification):
+    channel = store.channel(channel_name)
+    if not channel:
+        raise HTTPException(404, "channel not found")
+    if payload.probe:
+        started = time.perf_counter()
+        try:
+            send(channel, {"title": payload.title, "content": payload.content, "push_img_url": payload.push_img_url, "push_link_url": payload.push_link_url})
+            return {"code": 0, "message": "connection ok", "elapsed_ms": round((time.perf_counter() - started) * 1000), "status": 200}
+        except Exception as exc:
+            return JSONResponse({"code": 1, "message": "connection failed", "elapsed_ms": round((time.perf_counter() - started) * 1000), "error": redact_secret_text(exc)}, status_code=502)
     try:
         outbox_id = store.enqueue_channel(
             channel_name,
@@ -676,6 +753,44 @@ def test_channel(channel_name: str, payload: TestNotification):
     except KeyError as exc:
         raise HTTPException(404, "channel not found") from exc
     return {"code": 0, "message": "queued", "outbox_id": outbox_id}
+
+
+@app.get("/api/admin/export", dependencies=[Depends(admin_auth)])
+def export_config():
+    return {
+        "version": 1,
+        "config": store.config,
+        "templates": {"template": store.templates},
+        "plugins": store.list_plugin_configs(),
+    }
+
+
+@app.put("/api/admin/import", dependencies=[Depends(admin_auth)])
+def import_config(payload: dict = Body(...)):
+    config = payload.get("config")
+    templates = payload.get("templates")
+    if not isinstance(config, dict) or not isinstance(templates, dict):
+        raise HTTPException(400, "导入文件必须包含 config 和 templates")
+    plugins = payload.get("plugins")
+    try:
+        Store.validate_config(config)
+        Store.validate_templates(templates)
+        Store.validate_plugin_configs(plugins)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    original_config = store.config_path.read_bytes()
+    original_templates = store.templates_path.read_bytes()
+    try:
+        store.save_config(config)
+        store.save_templates(templates)
+        store.save_plugin_configs(plugins)
+    except Exception:
+        # Both files are restored if a later write fails, so an import cannot
+        # leave the instance with only half of the uploaded bundle applied.
+        store.config_path.write_bytes(original_config)
+        store.templates_path.write_bytes(original_templates)
+        raise
+    return {"code": 0, "message": "imported"}
 
 
 @app.get("/api/admin/logs", dependencies=[Depends(admin_auth)])
@@ -694,6 +809,17 @@ def plugins():
         }
         for manifest in _all_plugin_manifests()
     ]
+
+
+@app.get("/api/admin/plugins/{plugin_id}/logs", dependencies=[Depends(admin_auth)])
+def plugin_logs(plugin_id: str, limit: int = 200):
+    manifest = next((x for x in _all_plugin_manifests() if str(x.get("id") or "") == plugin_id), None)
+    if not manifest:
+        raise HTTPException(404, "plugin not found")
+    if manifest in builtin_plugin_manifests:
+        items = [item for item in LOG_BUFFER if plugin_id in str(item.get("logger") or "") or plugin_id in str(item.get("message") or "")]
+        return items[-max(1, min(limit, 500)):]
+    return plugin_supervisor.logs(plugin_id, limit)
 
 
 def _plugin_sources():
@@ -791,13 +917,67 @@ def save_plugin_config(plugin_id: str, payload: dict = Body(...)):
     return {"code": 0, "message": "saved"}
 
 
+@app.post("/api/admin/plugins/{plugin_id}/test", dependencies=[Depends(admin_auth)])
+def test_plugin_notification(plugin_id: str, payload: PluginTestRequest):
+    manifest = next((x for x in _all_plugin_manifests() if str(x.get("id") or "") == plugin_id), None)
+    if not manifest:
+        raise HTTPException(404, "plugin not found")
+    if "notify.action" not in (manifest.get("capabilities") or []):
+        raise HTTPException(400, "该插件不支持通知测试")
+    config = store.get_plugin_config(plugin_id) or {}
+    route_id = str(payload.route_id or config.get("route_id") or config.get("notify_route") or config.get("notify_route_id") or "").strip()
+    if not route_id and len(store.routes) == 1:
+        route_id = str(store.routes[0].get("route_id") or "")
+    if not route_id:
+        raise HTTPException(400, "请先为插件配置通知通道，或在测试时选择一个通知通道")
+    try:
+        outbox_id = store.enqueue_router(route_id, payload.title, payload.content, payload.push_img_url, payload.push_link_url)
+    except KeyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    logger.info("plugin notification test queued: %s route=%s outbox=%s", plugin_id, route_id, outbox_id)
+    return {"code": 0, "queued": True, "outbox_id": outbox_id, "plugin_id": plugin_id, "route_id": route_id}
+
+
 builtin_plugin_manifests = register_builtin_plugins(app, store)
 app.include_router(build_monitor_router(store, admin_auth))
 app.include_router(build_task_router(store, admin_auth))
 
 
+# WeCom callbacks verify their own signatures; everything else needs a console login
+# unless the plugin manifest lists the path in "public_paths".
+DEFAULT_PUBLIC_PLUGIN_PATHS = ("chat",)
+
+
+def _plugin_path_public(plugin_id, path):
+    manifest = plugin_supervisor.manifest_for(plugin_id) or {}
+    patterns = manifest.get("public_paths")
+    if not isinstance(patterns, list):
+        patterns = DEFAULT_PUBLIC_PLUGIN_PATHS
+    path = path.strip("/")
+    return any(fnmatch.fnmatchcase(path, str(pattern).strip("/")) for pattern in patterns)
+
+
+def _request_is_admin(request: Request):
+    if _valid_session(request.cookies.get("notify_session")):
+        return True
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "basic" or not value:
+        return False
+    try:
+        username, _, password = b64decode(value.strip(), validate=True).decode().partition(":")
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return False
+    return _valid_admin(username, password)
+
+
 @app.api_route("/api/plugins/{plugin_id}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 async def plugin_proxy(plugin_id: str, path: str, request: Request):
+    if not _plugin_path_public(plugin_id, path) and not _request_is_admin(request):
+        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+            return RedirectResponse("/#plugins", status_code=303)
+        raise HTTPException(401, "authentication required")
     return await plugin_supervisor.proxy(plugin_id, path, request)
 
 
@@ -805,9 +985,17 @@ STATIC_DIR = Path(__file__).with_name("static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _index_html():
+    # Version the asset URLs so browsers fetch the new UI right after an upgrade.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for asset in ("/static/app.css", "/static/app.js"):
+        html = html.replace(f'"{asset}"', f'"{asset}?v={quote(__version__)}"')
+    return html
+
+
 @app.get("/")
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return Response(_index_html(), media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
 
 def _all_plugin_manifests():
